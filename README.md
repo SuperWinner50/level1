@@ -1,0 +1,2 @@
+# level1
+Small script used to write nexrad radar files from IQ data files. Currently, it must be recompiled every time it is ran with different parameters found at the bottom of src/main.rs. Code partially adapted from the lrose-core repository.
