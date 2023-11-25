@@ -439,7 +439,7 @@ fn bin_to_deg(az: u16) -> f32 {
     az as f32 * 360.0 / 65536.0
 }
 
-fn el_bin_to_def(el: u16) -> f32 {
+fn el_bin_to_deg(el: u16) -> f32 {
     match bin_to_deg(el) {
         x if x > 270.0 => x - 360.0,
         x => x
@@ -652,26 +652,54 @@ where A: Iterator<Item = [f32; 2]> + ExactSizeIterator,
     [sum_i / len as f32, sum_q / len as f32]
 }
 
-fn read_sweep(pulses: Vec<Pulse>, info: &RvptsPulseInfo) -> silv::Sweep {
+fn find_ppi_or_rhi(pulses: &Vec<Pulse>) -> bool { // true = ppi, false = rhi
+    let mut ppi_diff = 0.0;
+    let mut rhi_diff = 0.0;
+
+    let mut last_az = bin_to_deg(pulses[0].hdr.iAz);
+    let mut last_el = el_bin_to_deg(pulses[0].hdr.iEl);
+
+    for pulse in pulses {
+        let az = bin_to_deg(pulse.hdr.iAz);
+        let el = el_bin_to_deg(pulse.hdr.iEl);
+
+        ppi_diff += angle_diff(last_az, az).abs();
+        rhi_diff += angle_diff(last_el, el).abs();
+
+        last_az = az;
+        last_el = el;
+    }
+
+    ppi_diff >= rhi_diff
+}
+
+fn angle_diff(a1: f32, a2: f32) -> f32 {
+    (a2 - a1 + 180.0).rem_euclid(360.0) - 180.0
+}
+
+fn read_sweep(pulses: Vec<Pulse>, info: &RvptsPulseInfo, is_ppi: bool) -> silv::Sweep {
     // let azs = pulses.iter().enumerate().fold(BTreeMap::new(), |mut acc, (i, pulse)| {
     //     let az = U16F16::from_num(bin_to_deg(pulse.hdr.iAz).rem_euclid(360.0));
     //     acc.entry(az).or_insert(vec![i]).push(i);
     //     acc
     // });
 
-    // println!("{:?}", azs);
+    let get_az = |pulse: &Pulse| {
+        if is_ppi {
+            bin_to_deg(pulse.hdr.iAz)
+        } else {
+            el_bin_to_deg(pulse.hdr.iEl)
+        }
+    };
 
-    let mut last_az = bin_to_deg(pulses[0].hdr.iAz);
+    let mut last_az = get_az(&pulses[0]);
     let mut dir = 0.0;
     let mut splits = vec![0];
     let mut acc_az = 0.0;
     for i in 0..pulses.len() {
-        let az = bin_to_deg(pulses[i].hdr.iAz);
+        let az = get_az(&pulses[i]);
         
-        let diff = match (az - last_az).abs() {
-            x if x > 180.0 => 360.0 - x,
-            x => x.copysign(az - last_az)
-        };
+        let diff = angle_diff(last_az, az);
         
         // if i % 100 == 0 {
         //     println!("{az}");
@@ -681,7 +709,7 @@ fn read_sweep(pulses: Vec<Pulse>, info: &RvptsPulseInfo) -> silv::Sweep {
             let mut angle = 0.0;
 
             for j in i + 1..pulses.len() {
-                let a = bin_to_deg(pulses[j].hdr.iAz);
+                let a = get_az(&pulses[j]);
                 if a != az {
                     angle = a;
                     break;
@@ -691,10 +719,7 @@ fn read_sweep(pulses: Vec<Pulse>, info: &RvptsPulseInfo) -> silv::Sweep {
             angle
         };
 
-        let diff_next = match (next_angle - az).abs() {
-            x if x > 180.0 => 360.0 - x,
-            x => x.copysign(next_angle - az)
-        };
+        let diff_next = angle_diff(az, next_angle);
 
         if dir == 0.0 && diff != 0.0 {
             dir = diff.signum();
@@ -710,9 +735,16 @@ fn read_sweep(pulses: Vec<Pulse>, info: &RvptsPulseInfo) -> silv::Sweep {
 
     splits.push(pulses.len());
 
+    for (i, sweep) in splits.windows(2).enumerate() {
+        println!("Found sweep {} with {} rays starting at az: {} el: {} and ending at az: {} el: {}", 
+            i, sweep[1] - sweep[0],
+            bin_to_deg(pulses[sweep[0]].hdr.iAz), el_bin_to_deg(pulses[sweep[0]].hdr.iEl),
+            bin_to_deg(pulses[sweep[1] - 1].hdr.iAz), el_bin_to_deg(pulses[sweep[1] - 1].hdr.iEl));
+    }
+
     // for split in splits.iter() {
     //     for i in split.saturating_sub(10)..std::cmp::min(split + 10, pulses.len()) {
-    //         println!("{}", bin_to_deg(pulses[i].hdr.iAz));
+    //         println!("{}", get_az(&pulses[i]));
     //     }
     //     println!("----");
     // }
@@ -726,7 +758,7 @@ fn read_sweep(pulses: Vec<Pulse>, info: &RvptsPulseInfo) -> silv::Sweep {
 
     let elev = pulses[start..end]
         .iter()
-        .map(|pulse| el_bin_to_def(pulse.hdr.iEl))
+        .map(|pulse| if is_ppi { el_bin_to_deg(pulse.hdr.iEl) } else { 0.0 })
         .sum::<f32>() / (end - start) as f32;
 
     let prt = pulses[start..end]
@@ -741,8 +773,6 @@ fn read_sweep(pulses: Vec<Pulse>, info: &RvptsPulseInfo) -> silv::Sweep {
         let rangekm = start_range / 1000.0 + ii as f32 * spacing / 1000.0;
         get_atten(elev, rangekm, &atten_table)
     }).collect();
-
-    println!("N {nyquist}");
 
     let mut sweep = silv::Sweep {
         rays: Vec::new(),
@@ -792,8 +822,6 @@ fn read_sweep(pulses: Vec<Pulse>, info: &RvptsPulseInfo) -> silv::Sweep {
 
     for chunk in pulses[start..end].chunks(SAMPLES) {
         // let az = chunk.iter().map(|pulse| bin_to_deg(pulse.hdr.iAz)).sum::<f32>() / SAMPLES_FL;
-        let az = bin_to_deg(chunk[0].hdr.iAz);
-        // println!("{az}");
         let powers = chunk.iter()
             .fold(vec![0.0f32; pulses[start].iqh.len()], |mut acc, pulse| {
                 for (sum, iq) in acc.iter_mut().zip(pulse.iqh.iter()) {
@@ -806,6 +834,7 @@ fn read_sweep(pulses: Vec<Pulse>, info: &RvptsPulseInfo) -> silv::Sweep {
         let dbz = powers.iter()
             .zip(corr.iter().zip(atten_corr.iter()))
             .map(|(&power, (&corr, &atten_corr))| calc_dbz(&info, power, corr, atten_corr))
+            .inspect(|&v| if !v.is_finite() || v.abs() > 1e5 { println!("Found bad value") })
             .collect();
 
         let vel = (0..pulses[start].iqh.len()).map(|i| {
@@ -822,16 +851,20 @@ fn read_sweep(pulses: Vec<Pulse>, info: &RvptsPulseInfo) -> silv::Sweep {
             calc_vel(nyquist, lag1_h, lag1_v)
         }).collect();
 
+        let az = get_az(&chunk[0]);
+
+        // if (az - 9.2).abs() < 1.0 {
+        //     println!("{}", az);
+        // }
+
         let ray = silv::Ray {
-            azimuth: az,
+            azimuth: if is_ppi { az } else { -az + 90.0 },
             data: HashMap::from([("REF".into(), dbz), ("VEL".into(), vel)]),
             ..Default::default()
         };
 
         sweep.rays.push(ray);
     }
-
-    println!("Found {} sweeps", splits.len() - 1);
 
     sweep
 }
@@ -853,12 +886,12 @@ fn calc_range_corr(start: f32, spacing: f32, bins: usize) -> Vec<f32> {
 
 use std::collections::HashMap;
 
-const SAMPLES: usize = 3;
+const SAMPLES: usize = 40;
 const SAMPLES_FL: f32 = SAMPLES as f32;
-const SWEEP_N: usize = 1; // Which sweep to output, if there are multiple
+const SWEEP_N: usize = 0; // Which sweep to output, if there are multiple
 
 fn main() {
-    let file = std::fs::read(r"C:\Users\super\Downloads\NOP4_RVP.20130520.195950.932.vcp212.3.H+V.460").unwrap();
+    let file = std::fs::read(r"C:\Users\super\Downloads\NOP4_RVP.20130520.195929.018.vcp212.2.H+V.460").unwrap();
     let mut reader = Cursor::new(file.as_slice());
 
     let info = read_pulse_info(&mut reader).unwrap();
@@ -887,7 +920,9 @@ fn main() {
         meters_between_cells: spacing,
     });
 
-    radar.sweeps.push(read_sweep(pulses, &info));
+    let is_ppi = find_ppi_or_rhi(&pulses);
+
+    radar.sweeps.push(read_sweep(pulses, &info, is_ppi));
 
     let options = silv::RadyOptions { sort_rays_by_azimuth: true, ..Default::default() };
 
