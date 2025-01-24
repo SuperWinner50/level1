@@ -506,11 +506,11 @@ struct Pulse {
 fn read_pulses(reader: &mut Cursor<&[u8]>) -> Vec<Pulse> {
     let mut pulses = Vec::new();
     
-    let mut i = 0;
-
-    while reader.get_ref().len() - reader.position() as usize > 100 {
+    while reader.get_ref().len() - reader.position() as usize > 450 {
         let hdr = read_pulse_hdr(reader).unwrap();
         let len = hdr.iNumVecs[0] + hdr.iNumVecs[1] + 51;
+        // println!("{}", reader.position());
+        // println!("{}", len);
         let iqh = unpack_iq(reader, 2 * len as usize);
         let iqv = unpack_iq(reader, 2 * len as usize);
 
@@ -520,11 +520,7 @@ fn read_pulses(reader: &mut Cursor<&[u8]>) -> Vec<Pulse> {
             iqv,
         };
 
-        if i % 1 == 0 {
-            pulses.push(pulse);
-        }
-
-        i = (i + 1) % 32;
+        pulses.push(pulse);
     }
 
     pulses
