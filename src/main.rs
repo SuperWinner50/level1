@@ -341,11 +341,18 @@ fn read_pulse_info(reader: &mut Cursor<&[u8]>) -> Result<RvptsPulseInfo, Box<dyn
 fn read_pulse_hdr(reader: &mut Cursor<&[u8]>) -> Result<RvptsPulseHdr, Box<dyn Error>> {
     let mut hdr = RvptsPulseHdr::default();
 
-    match reader.fill_buf().unwrap() {
-        x if x.starts_with(b"rvp8PulseHdr start\n") => reader.seek(SeekFrom::Current(19)).unwrap(),
-        x if x.starts_with(b"rvptsPulseHdr start\n") => reader.seek(SeekFrom::Current(20)).unwrap(),
-        _ => return Err("Header does not match".into()),
-    };
+    loop {
+        match reader.fill_buf().unwrap() {
+            x if x.starts_with(b"rvp8PulseHdr start\n") => reader.seek(SeekFrom::Current(19)).unwrap(),
+            x if x.starts_with(b"rvptsPulseHdr start\n") => reader.seek(SeekFrom::Current(20)).unwrap(),
+            x => {
+                reader.seek_relative(1).unwrap();
+                continue;
+            }
+        };
+
+        break
+    }
 
     hdr.iVersion   = read_scalar("iVersion=", reader);
     hdr.iFlags     = read_scalar("iFlags=", reader);
@@ -424,8 +431,8 @@ fn read_pulse_hdr(reader: &mut Cursor<&[u8]>) -> Result<RvptsPulseHdr, Box<dyn E
 
     match reader.fill_buf().unwrap() {
         x if x.starts_with(b"rvp8PulseHdr end\n") => reader.seek(SeekFrom::Current(17)).unwrap(),
-        x if x.starts_with(b"rvptsPulseHdr end\n") => reader.seek(SeekFrom::Current(18)).unwrap(),
         x if x.starts_with(b"rvptsPulseHdr end \n") => reader.seek(SeekFrom::Current(19)).unwrap(),
+        x if x.starts_with(b"rvptsPulseHdr end\n") => reader.seek(SeekFrom::Current(18)).unwrap(),
         _ => {
             println!("{:?}", reader.seek(SeekFrom::Current(0)).unwrap());
             return Err("Footer does not match".into());
@@ -501,9 +508,9 @@ fn read_pulses(reader: &mut Cursor<&[u8]>) -> Vec<Pulse> {
     
     let mut i = 0;
 
-    while !reader.fill_buf().unwrap().is_empty() {
+    while reader.get_ref().len() - reader.position() as usize > 100 {
         let hdr = read_pulse_hdr(reader).unwrap();
-        let len = hdr.iNumVecs[0] + hdr.iNumVecs[1];
+        let len = hdr.iNumVecs[0] + hdr.iNumVecs[1] + 51;
         let iqh = unpack_iq(reader, 2 * len as usize);
         let iqv = unpack_iq(reader, 2 * len as usize);
 
@@ -701,8 +708,8 @@ fn read_sweep(pulses: Vec<Pulse>, info: &RvptsPulseInfo, is_ppi: bool) -> silv::
         
         let diff = angle_diff(last_az, az);
         
-        // if i % 100 == 0 {
-        //     println!("{az}");
+        // println!("{az}");
+        // if  {
         // }
 
         let next_angle = {
@@ -886,12 +893,12 @@ fn calc_range_corr(start: f32, spacing: f32, bins: usize) -> Vec<f32> {
 
 use std::collections::HashMap;
 
-const SAMPLES: usize = 40;
+const SAMPLES: usize = 5;
 const SAMPLES_FL: f32 = SAMPLES as f32;
 const SWEEP_N: usize = 0; // Which sweep to output, if there are multiple
 
 fn main() {
-    let file = std::fs::read(r"C:\Users\super\Downloads\NOP4_RVP.20130520.195929.018.vcp212.2.H+V.460").unwrap();
+    let file = std::fs::read(r"C:\Users\super\Downloads\FOP1_RVP.20110524.222721.936.vcp12.1.H.460").unwrap();
     let mut reader = Cursor::new(file.as_slice());
 
     let info = read_pulse_info(&mut reader).unwrap();
