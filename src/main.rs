@@ -904,7 +904,6 @@ fn main() {
         name: "NOP4".into(),
         sweeps: Vec::new(),
         params: HashMap::new(),
-        scan_mode: silv::ScanMode::PPI,
     };
 
     let (start, spacing, _) = calc_range(&info);
